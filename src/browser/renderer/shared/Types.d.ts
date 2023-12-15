@@ -107,8 +107,8 @@ export interface ITextureAtlas extends IDisposable {
    * Clear all glyphs from the texture atlas.
    */
   clearTexture(): void;
-  getRasterizedGlyph(code: number, bg: number, fg: number, ext: number, restrictToCellHeight: boolean): IRasterizedGlyph;
-  getRasterizedGlyphCombinedChar(chars: string, bg: number, fg: number, ext: number, restrictToCellHeight: boolean): IRasterizedGlyph;
+  getRasterizedGlyph(code: number, bg: number, fg: number, ext: number, underlineVariantOffset: number, restrictToCellHeight: boolean): IRasterizedGlyph;
+  getRasterizedGlyphCombinedChar(chars: string, bg: number, fg: number, ext: number, underlineVariantOffset: number, restrictToCellHeight: boolean): IRasterizedGlyph;
 }
 
 /**
@@ -171,3 +171,18 @@ export interface ISelectionRenderModel {
   update(terminal: ITerminal, start: [number, number] | undefined, end: [number, number] | undefined, columnSelectMode?: boolean): void;
   isCellSelected(terminal: Terminal, x: number, y: number): boolean;
 }
+
+export type UnderlineCurlyLineType = 'up' | 'down';
+export type UnderlineCurlyJoinOrLine = 'join' | 'line';
+
+/**
+ * Y Complete upward join
+ * B Complete downward join
+ * M Split Right downward join
+ * P Split right upward join
+ * Q Split left upward join
+ * Z Split left downward join
+ * U Up line
+ * D Down line
+ */
+export type UnderlineDrawCurlyOp = 'Y' | 'B' | 'M' | 'Q' | 'P' | 'Z' | 'U' | 'D';

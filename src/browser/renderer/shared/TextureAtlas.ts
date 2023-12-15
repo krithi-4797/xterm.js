@@ -6,11 +6,11 @@
 import { IColorContrastCache } from 'browser/Types';
 import { DIM_OPACITY, TEXT_BASELINE } from 'browser/renderer/shared/Constants';
 import { tryDrawCustomChar } from 'browser/renderer/shared/CustomGlyphs';
-import { computeNextVariantOffset, excludeFromContrastRatioDemands, isPowerlineGlyph, isRestrictedPowerlineGlyph, throwIfFalsy } from 'browser/renderer/shared/RendererUtils';
-import { IBoundingBox, ICharAtlasConfig, IRasterizedGlyph, ITextureAtlas } from 'browser/renderer/shared/Types';
+import { computeNextVariantOffset, excludeFromContrastRatioDemands, getCurlyVariant, isPowerlineGlyph, isRestrictedPowerlineGlyph, throwIfFalsy } from 'browser/renderer/shared/RendererUtils';
+import { IBoundingBox, ICharAtlasConfig, IRasterizedGlyph, ITextureAtlas, UnderlineDrawCurlyOp } from 'browser/renderer/shared/Types';
 import { NULL_COLOR, color, rgba } from 'common/Color';
 import { EventEmitter } from 'common/EventEmitter';
-import { FourKeyMap } from 'common/MultiKeyMap';
+import { FiveKeyMap } from 'common/MultiKeyMap';
 import { IdleTaskQueue } from 'common/TaskQueue';
 import { IColor } from 'common/Types';
 import { AttributeData } from 'common/buffer/AttributeData';
@@ -58,8 +58,8 @@ let $glyph = undefined;
 export class TextureAtlas implements ITextureAtlas {
   private _didWarmUp: boolean = false;
 
-  private _cacheMap: FourKeyMap<number, number, number, number, IRasterizedGlyph> = new FourKeyMap();
-  private _cacheMapCombined: FourKeyMap<string, number, number, number, IRasterizedGlyph> = new FourKeyMap();
+  private _cacheMap: FiveKeyMap<number, number, number, number, number, IRasterizedGlyph> = new FiveKeyMap();
+  private _cacheMapCombined: FiveKeyMap<string, number, number, number, number, IRasterizedGlyph> = new FiveKeyMap();
 
   // The texture that the atlas is drawn to
   private _pages: AtlasPage[] = [];
@@ -121,9 +121,9 @@ export class TextureAtlas implements ITextureAtlas {
     const queue = new IdleTaskQueue();
     for (let i = 33; i < 126; i++) {
       queue.enqueue(() => {
-        if (!this._cacheMap.get(i, DEFAULT_COLOR, DEFAULT_COLOR, DEFAULT_EXT)) {
+        if (!this._cacheMap.get(i, DEFAULT_COLOR, DEFAULT_COLOR, DEFAULT_EXT, 0)) {
           const rasterizedGlyph = this._drawToCache(i, DEFAULT_COLOR, DEFAULT_COLOR, DEFAULT_EXT);
-          this._cacheMap.set(i, DEFAULT_COLOR, DEFAULT_COLOR, DEFAULT_EXT, rasterizedGlyph);
+          this._cacheMap.set(i, DEFAULT_COLOR, DEFAULT_COLOR, DEFAULT_EXT, 0, rasterizedGlyph);
         }
       });
     }
@@ -242,29 +242,30 @@ export class TextureAtlas implements ITextureAtlas {
     }
   }
 
-  public getRasterizedGlyphCombinedChar(chars: string, bg: number, fg: number, ext: number, restrictToCellHeight: boolean): IRasterizedGlyph {
-    return this._getFromCacheMap(this._cacheMapCombined, chars, bg, fg, ext, restrictToCellHeight);
+  public getRasterizedGlyphCombinedChar(chars: string, bg: number, fg: number, ext: number, underlineVariantOffset: number, restrictToCellHeight: boolean): IRasterizedGlyph {
+    return this._getFromCacheMap(this._cacheMapCombined, chars, bg, fg, ext, underlineVariantOffset, restrictToCellHeight);
   }
 
-  public getRasterizedGlyph(code: number, bg: number, fg: number, ext: number, restrictToCellHeight: boolean): IRasterizedGlyph {
-    return this._getFromCacheMap(this._cacheMap, code, bg, fg, ext, restrictToCellHeight);
+  public getRasterizedGlyph(code: number, bg: number, fg: number, ext: number, underlineVariantOffset: number, restrictToCellHeight: boolean): IRasterizedGlyph {
+    return this._getFromCacheMap(this._cacheMap, code, bg, fg, ext, underlineVariantOffset, restrictToCellHeight);
   }
 
   /**
    * Gets the glyphs texture coords, drawing the texture if it's not already
    */
   private _getFromCacheMap(
-    cacheMap: FourKeyMap<string | number, number, number, number, IRasterizedGlyph>,
+    cacheMap: FiveKeyMap<string | number, number, number, number, number, IRasterizedGlyph>,
     key: string | number,
     bg: number,
     fg: number,
     ext: number,
+    underlineVariantOffset: number,
     restrictToCellHeight: boolean = false
   ): IRasterizedGlyph {
-    $glyph = cacheMap.get(key, bg, fg, ext);
+    $glyph = cacheMap.get(key, bg, fg, ext, underlineVariantOffset);
     if (!$glyph) {
-      $glyph = this._drawToCache(key, bg, fg, ext, restrictToCellHeight);
-      cacheMap.set(key, bg, fg, ext, $glyph);
+      $glyph = this._drawToCache(key, bg, fg, ext, underlineVariantOffset, restrictToCellHeight);
+      cacheMap.set(key, bg, fg, ext, underlineVariantOffset, $glyph);
     }
     return $glyph;
   }
@@ -425,7 +426,7 @@ export class TextureAtlas implements ITextureAtlas {
   }
 
   @traceCall
-  private _drawToCache(codeOrChars: number | string, bg: number, fg: number, ext: number, restrictToCellHeight: boolean = false): IRasterizedGlyph {
+  private _drawToCache(codeOrChars: number | string, bg: number, fg: number, ext: number, underlineVariantoffset: number = 0, restrictToCellHeight: boolean = false): IRasterizedGlyph {
     const chars = typeof codeOrChars === 'number' ? String.fromCharCode(codeOrChars) : codeOrChars;
 
     // Uncomment for debugging
@@ -545,13 +546,12 @@ export class TextureAtlas implements ITextureAtlas {
       const yTop = Math.ceil(padding + this._config.deviceCharHeight) - yOffset - (restrictToCellHeight ? lineWidth * 2 : 0);
       const yMid = yTop + lineWidth;
       const yBot = yTop + lineWidth * 2;
-      let nextOffset = this._workAttributeData.getUnderlineVariantOffset();
+      let nextOffset = underlineVariantoffset;
 
       for (let i = 0; i < chWidth; i++) {
         this._tmpCtx.save();
         const xChLeft = xLeft + i * this._config.deviceCellWidth;
         const xChRight = xLeft + (i + 1) * this._config.deviceCellWidth;
-        const xChMid = xChLeft + this._config.deviceCellWidth / 2;
         switch (this._workAttributeData.extended.underlineStyle) {
           case UnderlineStyle.DOUBLE:
             this._tmpCtx.moveTo(xChLeft, yTop);
@@ -560,39 +560,97 @@ export class TextureAtlas implements ITextureAtlas {
             this._tmpCtx.lineTo(xChRight, yBot);
             break;
           case UnderlineStyle.CURLY:
-            // Choose the bezier top and bottom based on the device pixel ratio, the curly line is
-            // made taller when the line width is  as otherwise it's not very clear otherwise.
-            const yCurlyBot = lineWidth <= 1 ? yBot : Math.ceil(padding + this._config.deviceCharHeight - lineWidth / 2) - yOffset;
-            const yCurlyTop = lineWidth <= 1 ? yTop : Math.ceil(padding + this._config.deviceCharHeight + lineWidth / 2) - yOffset;
-            // Clip the left and right edges of the underline such that it can be drawn just outside
-            // the edge of the cell to ensure a continuous stroke when there are multiple underlined
-            // glyphs adjacent to one another.
-            const clipRegion = new Path2D();
-            clipRegion.rect(xChLeft, yTop, this._config.deviceCellWidth, yBot - yTop);
-            this._tmpCtx.clip(clipRegion);
-            // Start 1/2 cell before and end 1/2 cells after to ensure a smooth curve with other
-            // cells
-            this._tmpCtx.moveTo(xChLeft - this._config.deviceCellWidth / 2, yMid);
-            this._tmpCtx.bezierCurveTo(
-              xChLeft - this._config.deviceCellWidth / 2, yCurlyTop,
-              xChLeft, yCurlyTop,
-              xChLeft, yMid
-            );
-            this._tmpCtx.bezierCurveTo(
-              xChLeft, yCurlyBot,
-              xChMid, yCurlyBot,
-              xChMid, yMid
-            );
-            this._tmpCtx.bezierCurveTo(
-              xChMid, yCurlyTop,
-              xChRight, yCurlyTop,
-              xChRight, yMid
-            );
-            this._tmpCtx.bezierCurveTo(
-              xChRight, yCurlyBot,
-              xChRight + this._config.deviceCellWidth / 2, yCurlyBot,
-              xChRight + this._config.deviceCellWidth / 2, yMid
-            );
+            // Draw Curly through segments.
+            // Segments are distinguished from up to down
+            // up:
+            //     ***
+            //    *
+            // down:
+            //    *
+            //     ***
+
+            // [TODO] Up or down offset, To be verified.
+            const yMidRectOffset = Math.floor(yMid) - lineWidth;
+
+            const plan = getCurlyVariant(this._config.deviceCellWidth, lineWidth, nextOffset) as string;
+            const steps = plan.split(' ');
+            let xOffset = 0;
+
+            steps.forEach(step => {
+              const op: UnderlineDrawCurlyOp = step.substring(0, 1) as UnderlineDrawCurlyOp;
+              const pixels = Number.parseInt(step.substring(1));
+
+              // draw join
+              if (op === 'Y' || op === 'B' || op === 'M' || op === 'Q' || op === 'P' || op === 'Z') {
+                // TODO recode
+                if (pixels < lineWidth) {
+                  if (op === 'Q') {
+                    for (let index = 0; index < pixels; index++) {
+                      this._tmpCtx.fillRect(xChLeft + xOffset + index, yMidRectOffset - index, 1, lineWidth);
+                    }
+                    xOffset += pixels;
+                    return;
+                  }
+
+                  if (op === 'P') {
+                    for (let index = 0; index < pixels; index++) {
+                      this._tmpCtx.fillRect(xChLeft + xOffset + index, yMidRectOffset - (lineWidth - pixels) - index, 1, lineWidth);
+                    }
+                    xOffset += pixels;
+                    return;
+                  }
+
+                  if (op === 'Z') {
+                    for (let index = 0; index < pixels; index++) {
+                      this._tmpCtx.fillRect(xChLeft + xOffset + index, yMidRectOffset - (lineWidth - 1) + index, 1, lineWidth);
+                    }
+                    xOffset += pixels;
+                    return;
+                  }
+
+                  if (op === 'M') {
+                    for (let index = 0; index < pixels; index++) {
+                      this._tmpCtx.fillRect(xChLeft + xOffset + index, yMidRectOffset - (lineWidth - 1) + (lineWidth - pixels) + index, 1, lineWidth);
+                    }
+                    xOffset += pixels;
+                    return;
+                  }
+                } else {
+                  if (op === 'Y') {
+                    for (let index = 0; index < pixels; index++) {
+                      this._tmpCtx.fillRect(xChLeft + xOffset + index, yMidRectOffset - index, 1, lineWidth);
+                    }
+                    xOffset += pixels;
+                    return;
+                  }
+
+                  if (op === 'B') {
+                    for (let index = 0; index < pixels; index++) {
+                      this._tmpCtx.fillRect(xChLeft + xOffset + index, yMidRectOffset - (lineWidth - 1) + index, 1, lineWidth);
+                    }
+                    xOffset += pixels;
+                    return;
+                  }
+                }
+                return;
+              }
+
+              // draw line
+              if (op === 'U') {
+                this._tmpCtx.fillRect(xChLeft + xOffset, yMidRectOffset - lineWidth, pixels, lineWidth);
+                xOffset += pixels;
+                return;
+              }
+
+              if (op === 'D') {
+                this._tmpCtx.fillRect(xChLeft + xOffset, yMidRectOffset + 1, pixels, lineWidth);
+                xOffset += pixels;
+                return;
+              }
+            });
+
+            // handle next
+            nextOffset++;
             break;
           case UnderlineStyle.DOTTED:
             const offsetWidth = nextOffset === 0 ? 0 :
